@@ -1,123 +1,183 @@
 // routes/shop.js
 const express = require("express");
 const User = require("../models/User");
+const ShopItem = require("../models/ShopItem"); // <<< Importer le nouveau modèle
 const { authenticateToken } = require("../middleware/auth");
 const { sendRconCommand } = require("../utils/rconClient");
+const mongoose = require("mongoose");
 
 const router = express.Router();
 
-// --- Simulation de la base de données des items ---
-// Dans une vraie application, ceci viendrait de votre base de données
-const shopItems = {
-  diamond: { price: 50, description: "Un diamant brillant" },
-  iron_ingot: { price: 5, description: "Un lingot de fer" },
-  dirt: { price: 1, description: "Juste de la terre..." },
-};
-// --- Fin de la simulation ---
-
-// GET /api/shop/items - Endpoint pour lister les items (pas besoin d'être logué)
-router.get("/items", (req, res) => {
-  res.json(shopItems);
-});
-
-// POST /api/shop/purchase
-// Achète un item - Protégé par JWT
-router.post("/purchase", authenticateToken, async (req, res) => {
-  const { itemId, quantity = 1 } = req.body;
-  const userId = req.user.id; // Récupéré depuis le JWT vérifié
-  const username = req.user.username; // Récupéré depuis le JWT
-
-  if (!itemId || !shopItems[itemId]) {
-    return res.status(400).json({ message: "ID d'item invalide ou manquant." });
-  }
-  if (!Number.isInteger(quantity) || quantity < 1) {
-    return res
-      .status(400)
-      .json({ message: "La quantité doit être un entier positif." });
-  }
-
-  const item = shopItems[itemId];
-  const totalPrice = item.price * quantity;
-
+// GET /api/shop/items - Renvoie maintenant TOUTES les offres actives (Admin + Joueurs)
+router.get("/items", async (req, res) => {
   try {
-    // Utiliser une transaction pour garantir l'atomicité (si MongoDB >= 4.0 et replica set/Atlas)
-    // Pour une instance standalone simple, on fait au mieux sans transaction explicite
-    // Mais findOneAndUpdate est atomique sur un seul document.
+    // Récupérer tous les items où isEnabled est true
+    const items = await ShopItem.find({ isEnabled: true })
+      // Sélectionner les champs utiles pour l'interface Shop
+      // _id est maintenant l'identifiant unique de l'OFFRE
+      .select(
+        "itemId name description price quantity sellerUsername createdAt _id"
+      )
+      .sort({ createdAt: -1 }); // Trier par date de création, les plus récentes d'abord ?
 
-    // 1. Trouver l'utilisateur et vérifier son solde
-    const user = await User.findById(userId);
+    // On peut mapper pour clarifier Admin vs Player si besoin pour le front-end
+    const formattedItems = items.map((item) => ({
+      listingId: item._id, // Utiliser _id comme identifiant unique de l'offre
+      itemId: item.itemId,
+      name: item.name,
+      description: item.description,
+      price: item.price,
+      quantity: item.quantity,
+      seller: item.sellerUsername || "AdminShop", // Indiquer 'AdminShop' si sellerUsername est null/vide
+      listedAt: item.createdAt,
+    }));
 
-    if (!user) {
-      return res.status(404).json({ message: "Utilisateur non trouvé." });
-    }
-
-    if (user.balance < totalPrice) {
-      console.log(
-        `Achat échoué: Solde insuffisant pour ${username} (solde: ${user.balance}, coût: ${totalPrice})`
-      );
-      return res
-        .status(400)
-        .json({
-          message: `Solde insuffisant. Vous avez ${user.balance}, besoin de ${totalPrice}.`,
-        });
-    }
-
-    // 2. Essayer d'envoyer la commande RCON *avant* de déduire le solde (plus sûr)
-    //    Adaptez l'ID de l'item si besoin (ex: 'minecraft:diamond')
-    const minecraftItemId = `minecraft:${itemId}`; // Assurez-vous que c'est le bon format pour /give
-    const rconCommand = `give ${username} ${minecraftItemId} ${quantity}`;
-    const rconResult = await sendRconCommand(rconCommand);
-
-    if (!rconResult.success) {
-      // La commande RCON a échoué, ne pas déduire le solde
-      console.error(
-        `Achat échoué: Erreur RCON pour ${username} lors de l'achat de ${quantity}x ${itemId}. Erreur: ${rconResult.error}`
-      );
-      // Informer l'utilisateur d'une erreur serveur, potentiellement réessayer plus tard.
-      return res
-        .status(500)
-        .json({
-          message: `Erreur lors de la communication avec le serveur Minecraft. L'achat n'a pas été effectué. Détails: ${rconResult.error}`,
-        });
-    }
-
-    // 3. Commande RCON réussie, déduire le solde (opération atomique)
-    const updatedUser = await User.findByIdAndUpdate(
-      userId,
-      { $inc: { balance: -totalPrice } }, // Décrémente le solde
-      { new: true } // Retourne le document mis à jour
-    );
-
-    if (!updatedUser) {
-      // Ne devrait pas arriver si l'utilisateur existait, mais sécurité
-      console.error(
-        `Achat échoué: Utilisateur ${username} non trouvé lors de la mise à jour du solde après RCON succès.`
-      );
-      // Que faire ici? L'item a été donné mais le solde pas débité -> Problème ! Logguer agressivement.
-      // Idéalement, une transaction DB couvrirait RCON + Update. Sans ça, c'est un risque.
-      return res
-        .status(500)
-        .json({
-          message:
-            "Erreur critique lors de la mise à jour du solde après l'envoi de l'item. Contactez un admin.",
-        });
-    }
-
-    console.log(
-      `Achat réussi pour ${username}: ${quantity}x ${itemId}. Nouveau solde: ${updatedUser.balance}`
-    );
-    res.json({
-      success: true,
-      message: `Achat réussi ! Vous avez reçu ${quantity}x ${
-        item.description || itemId
-      }.`,
-      newBalance: updatedUser.balance,
-    });
+    res.json(formattedItems); // Renvoyer les items formatés
   } catch (error) {
-    console.error(`Erreur lors de l'achat pour ${username}:`, error);
+    console.error("Erreur lors de la récupération des items:", error);
     res
       .status(500)
-      .json({ message: "Erreur serveur interne lors de l'achat." });
+      .json({ message: "Erreur serveur lors de la récupération des items." });
+  }
+});
+
+router.post("/purchase", authenticateToken, async (req, res) => {
+  const { listingId } = req.body;
+  const buyerUserId = req.user.id;
+  const buyerUsername = req.user.username;
+
+  if (!listingId || !mongoose.Types.ObjectId.isValid(listingId)) {
+    // Garder mongoose ici pour ObjectId.isValid
+    return res
+      .status(400)
+      .json({ message: "ID de l'offre (listingId) invalide ou manquant." });
+  }
+
+  // PAS DE SESSION / TRANSACTION ICI
+
+  try {
+    // 1. Trouver l'offre et l'acheteur (SANS session)
+    const listing = await ShopItem.findById(listingId);
+    const buyerUser = await User.findById(buyerUserId);
+
+    // Mêmes vérifications qu'avant
+    if (!listing) throw new Error("Offre non trouvée.");
+    if (!listing.isEnabled) throw new Error("Cette offre n'est plus active.");
+    if (!buyerUser) throw new Error("Acheteur non trouvé.");
+    if (listing.sellerUsername === buyerUsername)
+      throw new Error("Vous ne pouvez pas acheter votre propre offre.");
+    if (buyerUser.balance < listing.price) {
+      throw new Error(
+        `Solde insuffisant. Vous avez ${buyerUser.balance}, besoin de ${listing.price}.`
+      );
+    }
+
+    let rconSuccess = false;
+    let finalBuyerBalance = buyerUser.balance; // Init avec balance actuelle
+
+    if (listing.sellerUsername) {
+      // --- ACHAT JOUEUR (non atomique) ---
+      console.log(
+        `Début achat joueur (SANS TX): ${buyerUsername} achète ${listing.quantity}x ${listing.itemId} de ${listing.sellerUsername} pour ${listing.price}`
+      );
+      const sellerUser = await User.findOne({
+        username: listing.sellerUsername,
+      });
+      if (!sellerUser)
+        throw new Error(`Vendeur ${listing.sellerUsername} introuvable.`);
+
+      // !! Risque ici : si l'une des opérations échoue, l'autre n'est pas annulée !!
+      // 2a. Débiter l'acheteur
+      const updatedBuyer = await User.findByIdAndUpdate(
+        buyerUserId,
+        { $inc: { balance: -listing.price } },
+        { new: true } // Retourne le doc mis à jour
+      );
+      if (!updatedBuyer)
+        throw new Error("Échec de la mise à jour du solde acheteur.");
+      finalBuyerBalance = updatedBuyer.balance; // Stocker le nouveau solde
+
+      // 2b. Créditer le vendeur
+      await User.findByIdAndUpdate(sellerUser._id, {
+        $inc: { balance: listing.price },
+      });
+      // On ne vérifie même pas le succès ici pour simplifier, mais on pourrait
+
+      // 3. Tenter RCON (après modifs DB)
+      const minecraftItemId = `minecraft:${listing.itemId}`;
+      const rconCommand = `give ${buyerUsername} ${minecraftItemId} ${listing.quantity}`;
+      const rconResult = await sendRconCommand(rconCommand);
+      rconSuccess = rconResult.success;
+      if (!rconSuccess)
+        console.error(
+          `Erreur RCON (Achat Joueur) pour ${listingId}: ${rconResult.error}`
+        );
+
+      // 4. Supprimer l'offre (même si RCON échoue pour l'instant)
+      await ShopItem.findByIdAndDelete(listingId);
+      console.log(
+        `Achat joueur ${listingId} traité (DB modifiée, offre supprimée). Statut RCON: ${rconSuccess}`
+      );
+    } else {
+      // --- ACHAT ADMIN (relativement sûr avec $inc) ---
+      console.log(
+        `Début achat admin (SANS TX): ${buyerUsername} achète ${listing.quantity}x ${listing.itemId} pour ${listing.price}`
+      );
+
+      // 2a. Débiter l'acheteur (atomique sur ce seul document)
+      const updatedBuyer = await User.findByIdAndUpdate(
+        buyerUserId,
+        { $inc: { balance: -listing.price } },
+        { new: true }
+      );
+      if (!updatedBuyer)
+        throw new Error("Échec de la mise à jour du solde acheteur (Admin).");
+      finalBuyerBalance = updatedBuyer.balance;
+
+      // 3. Tenter RCON
+      const minecraftItemId = `minecraft:${listing.itemId}`;
+      const rconCommand = `give ${buyerUsername} ${minecraftItemId} ${listing.quantity}`;
+      const rconResult = await sendRconCommand(rconCommand);
+      rconSuccess = rconResult.success;
+      if (!rconSuccess)
+        console.error(
+          `Erreur RCON (Achat Admin) pour ${listingId}: ${rconResult.error}`
+        );
+
+      console.log(
+        `Achat admin ${listingId} traité (DB modifiée). Statut RCON: ${rconSuccess}`
+      );
+      // Pas de suppression de l'offre admin
+    }
+
+    // --- Réponse finale ---
+    if (!rconSuccess) {
+      // Renvoyer succès partiel avec avertissement si RCON a échoué
+      return res.status(200).json({
+        success: true, // La partie financière est OK (ou au mieux sans TX)
+        warning:
+          "L'achat a été enregistré et votre solde mis à jour, mais une erreur est survenue lors de la livraison de l'item en jeu. Contactez un administrateur.",
+        listingId: listingId,
+        newBalance: finalBuyerBalance,
+      });
+    } else {
+      // Succès complet
+      res.json({
+        success: true,
+        message: `Achat réussi ! Vous devriez recevoir ${listing.quantity}x ${
+          listing.name || listing.itemId
+        }.`,
+        newBalance: finalBuyerBalance,
+      });
+    }
+  } catch (error) {
+    console.error(
+      `Erreur globale lors de l'achat (SANS TX) de ${listingId} par ${buyerUsername}:`,
+      error.message
+    );
+    res
+      .status(400)
+      .json({ message: error.message || "Erreur lors de l'achat." });
   }
 });
 
