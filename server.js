@@ -1,5 +1,5 @@
 // server.js
-require("dotenv").config(); // Charger les variables d'environnement en premier
+require("dotenv").config();
 const express = require("express");
 const connectDB = require("./db");
 
@@ -7,6 +7,7 @@ const connectDB = require("./db");
 const authRoutes = require("./routes/auth");
 const shopRoutes = require("./routes/shop");
 const internalRoutes = require("./routes/internal");
+const userRoutes = require("./routes/users"); // <<< AJOUTER CET IMPORT
 
 // Initialiser l'application Express
 const app = express();
@@ -15,21 +16,14 @@ const app = express();
 connectDB();
 
 // Middlewares globaux
-app.use(express.json()); // Pour parser les requêtes JSON entrantes
-
-// --- CORS ---
-// Si votre Interface Shop est sur un domaine/port différent de l'API,
-// vous aurez besoin de configurer CORS.
-// npm install cors
-// const cors = require('cors');
-// app.use(cors()); // Configuration simple (autorise tout)
-// Pour plus de sécurité:
-// app.use(cors({ origin: 'http://votre-domaine-shop.com' }));
+app.use(express.json());
+// app.use(cors(...)); // Si besoin
 
 // Définir les routes
 app.use("/api/auth", authRoutes);
 app.use("/api/shop", shopRoutes);
-app.use("/api/internal", internalRoutes); // Routes pour le plugin MC
+app.use("/api/internal", internalRoutes);
+app.use("/api/users", userRoutes); // <<< AJOUTER CETTE LIGNE pour monter les routes utilisateur
 
 // Route de test simple
 app.get("/", (req, res) => {

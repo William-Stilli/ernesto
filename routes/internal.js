@@ -151,4 +151,111 @@ router.post("/sell", authenticateInternal, async (req, res) => {
   }
 });
 
+router.get("/pending-deliveries", authenticateInternal, async (req, res) => {
+  const { username } = req.query;
+
+  if (!username) {
+    return res.status(400).json({ message: "Paramètre username manquant." });
+  }
+  const lowerCaseUsername = username.toLowerCase();
+
+  try {
+    // Trouver l'utilisateur pour obtenir son ID
+    const user = await User.findOne({ username: lowerCaseUsername }).select(
+      "_id"
+    );
+    if (!user) {
+      // Ne pas dire si l'user existe ou pas, juste qu'il n'y a rien à récupérer
+      console.log(
+        `[Pending Deliveries] Utilisateur ${lowerCaseUsername} non trouvé pour la réclamation.`
+      );
+      return res.json([]); // Renvoyer un tableau vide
+    }
+
+    // Trouver les livraisons en attente pour cet utilisateur
+    const pending = await PendingDelivery.find({
+      buyerUserId: user._id,
+      status: "pending",
+    }).select("itemId quantity name description nbtData _id"); // Renvoyer l'ID de livraison (_id)
+
+    const formattedPending = pending.map((p) => ({
+      deliveryId: p._id, // L'ID unique de cette livraison en attente
+      itemId: p.itemId,
+      quantity: p.quantity,
+      name: p.name,
+      description: p.description,
+      // nbtData: p.nbtData
+    }));
+
+    console.log(
+      `[Pending Deliveries] ${formattedPending.length} item(s) en attente trouvés pour ${lowerCaseUsername}`
+    );
+    res.json(formattedPending); // Renvoyer la liste
+  } catch (error) {
+    console.error(
+      `Erreur lors de la récupération des livraisons pour ${lowerCaseUsername}:`,
+      error
+    );
+    res.status(500).json({ message: "Erreur serveur interne." });
+  }
+});
+
+// POST /api/internal/confirm-delivery
+// Appelé par le mod/plugin serveur APRES avoir donné les items au joueur
+router.post("/confirm-delivery", authenticateInternal, async (req, res) => {
+  // Attends un tableau d'IDs de livraisons qui ont été données avec succès en jeu
+  const { deliveryIds } = req.body;
+
+  if (!deliveryIds || !Array.isArray(deliveryIds) || deliveryIds.length === 0) {
+    return res
+      .status(400)
+      .json({ message: "Tableau deliveryIds manquant ou vide." });
+  }
+
+  // Vérifier que ce sont des ObjectIds valides (optionnel mais propre)
+  const validObjectIds = deliveryIds.filter((id) =>
+    mongoose.Types.ObjectId.isValid(id)
+  );
+  if (validObjectIds.length !== deliveryIds.length) {
+    console.warn(
+      "[Confirm Delivery] Certains IDs fournis n'étaient pas valides."
+    );
+  }
+  if (validObjectIds.length === 0) {
+    return res
+      .status(400)
+      .json({ message: "Aucun ID de livraison valide fourni." });
+  }
+
+  try {
+    // Mettre à jour le statut des livraisons confirmées
+    // On pourrait aussi les supprimer : await PendingDelivery.deleteMany(...)
+    const updateResult = await PendingDelivery.updateMany(
+      { _id: { $in: validObjectIds }, status: "pending" }, // Condition : seulement celles en attente
+      { $set: { status: "delivered", deliveredAt: new Date() } }
+    );
+
+    console.log(
+      `[Confirm Delivery] Confirmation reçue pour ${deliveryIds.length} IDs. Mis à jour: ${updateResult.modifiedCount}.`
+    );
+
+    if (updateResult.matchedCount !== validObjectIds.length) {
+      console.warn(
+        `[Confirm Delivery] Certains IDs (${
+          validObjectIds.length - updateResult.matchedCount
+        }) n'ont pas été trouvés ou n'étaient pas en statut 'pending'.`
+      );
+    }
+
+    res
+      .status(200)
+      .json({
+        message: `${updateResult.modifiedCount} livraison(s) marquée(s) comme délivrée(s).`,
+      });
+  } catch (error) {
+    console.error("Erreur lors de la confirmation de livraison:", error);
+    res.status(500).json({ message: "Erreur serveur interne." });
+  }
+});
+
 module.exports = router;
