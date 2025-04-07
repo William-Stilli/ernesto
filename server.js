@@ -9,6 +9,13 @@ const shopRoutes = require("./routes/shop");
 const internalRoutes = require("./routes/internal");
 const userRoutes = require("./routes/users"); // <<< AJOUTER CET IMPORT
 
+const corsOptions = {
+  origin: "http://localhost:3001", // Remplacez par l'URL de votre frontend
+  optionsSuccessStatus: 200, // Certains navigateurs anciens (IE11, divers SmartTVs) bloquent sur 204
+};
+
+app.use(cors(corsOptions)); // Utiliser CORS avec les options définies
+
 // Initialiser l'application Express
 const app = express();
 
