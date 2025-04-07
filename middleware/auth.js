@@ -37,7 +37,6 @@ function authenticateToken(req, res, next) {
   });
 }
 
-// >>> Fonction manquante à ajouter <<<
 // Middleware pour protéger l'endpoint interne appelé par le plugin Minecraft
 function authenticateInternal(req, res, next) {
   // Vérifier si la clé API est définie dans l'environnement
@@ -61,7 +60,6 @@ function authenticateInternal(req, res, next) {
   console.log("Internal Auth: Clé API vérifiée.");
   next(); // Clé OK, passer à la suite (le handler async de la route)
 }
-// >>> Fin de la fonction manquante <<<
 
 // Assurez-vous que les deux fonctions sont exportées :
 module.exports = { authenticateToken, authenticateInternal }; // <<< Dé-commentez authenticateInternal

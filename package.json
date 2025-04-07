@@ -16,6 +16,12 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.13.2",
     "nodemon": "^3.1.9",
-    "rcon-client": "^4.2.5"
+    "rcon-client": "^4.2.5",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/sdk-node": "^0.53.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.47.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.53.0",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.53.0",
+    "@opentelemetry/exporter-logs-otlp-http": "^0.53.0"
   }
 }

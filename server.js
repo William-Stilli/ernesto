@@ -2,6 +2,7 @@
 require("dotenv").config();
 const express = require("express");
 const connectDB = require("./db");
+const cors = require("cors");
 
 // Importer les routeurs
 const authRoutes = require("./routes/auth");
@@ -14,10 +15,10 @@ const corsOptions = {
   optionsSuccessStatus: 200, // Certains navigateurs anciens (IE11, divers SmartTVs) bloquent sur 204
 };
 
-app.use(cors(corsOptions)); // Utiliser CORS avec les options définies
-
 // Initialiser l'application Express
 const app = express();
+
+app.use(cors(corsOptions)); // Utiliser CORS avec les options définies
 
 // Connexion à la base de données MongoDB
 connectDB();
