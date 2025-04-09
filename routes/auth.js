@@ -9,7 +9,7 @@ require("dotenv").config();
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET;
-const ACCESS_TOKEN_EXPIRY = process.env.ACCESS_TOKEN_EXPIRY || "15m";
+const ACCESS_TOKEN_EXPIRY = process.env.ACCESS_TOKEN_EXPIRY || "15m"; //TODO: Need to be changed to 15m
 const REFRESH_TOKEN_EXPIRY = process.env.REFRESH_TOKEN_EXPIRY || "7d";
 
 // --- LOGIN : Renvoie maintenant Access + Refresh Token ---

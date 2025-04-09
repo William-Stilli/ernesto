@@ -247,14 +247,68 @@ router.post("/confirm-delivery", authenticateInternal, async (req, res) => {
       );
     }
 
-    res
-      .status(200)
-      .json({
-        message: `${updateResult.modifiedCount} livraison(s) marquée(s) comme délivrée(s).`,
-      });
+    res.status(200).json({
+      message: `${updateResult.modifiedCount} livraison(s) marquée(s) comme délivrée(s).`,
+    });
   } catch (error) {
     console.error("Erreur lors de la confirmation de livraison:", error);
     res.status(500).json({ message: "Erreur serveur interne." });
+  }
+});
+
+// --- NOUVELLE ROUTE pour créditer un joueur (appelée par le mod/plugin) ---
+// POST /api/internal/credit-balance
+router.post("/credit-balance", authenticateInternal, async (req, res) => {
+  const { username, amount, reason } = req.body;
+
+  // --- Validation ---
+  if (!username || amount === undefined || amount === null) {
+    return res
+      .status(400)
+      .json({ message: "Données manquantes (username, amount)." });
+  }
+  const numAmount = parseFloat(amount);
+  if (isNaN(numAmount) || numAmount <= 0) {
+    // On ne crédite que des montants positifs
+    return res
+      .status(400)
+      .json({
+        message:
+          "Le montant à créditer doit être un nombre strictement positif.",
+      });
+  }
+  const lowerCaseUsername = username.toLowerCase();
+
+  try {
+    // Trouver l'utilisateur et incrémenter son solde (atomique)
+    const updatedUser = await User.findOneAndUpdate(
+      { username: lowerCaseUsername },
+      { $inc: { balance: numAmount } },
+      { new: true } // Retourne le document mis à jour
+    );
+
+    if (!updatedUser) {
+      console.warn(
+        `[Credit Balance] Tentative de crédit pour utilisateur inconnu: ${lowerCaseUsername}`
+      );
+      return res
+        .status(404)
+        .json({ message: `Utilisateur non trouvé: ${username}` });
+    }
+
+    // Succès
+    console.log(
+      `[Credit Balance] Utilisateur ${lowerCaseUsername} crédité de ${numAmount}. Nouveau solde: ${
+        updatedUser.balance
+      }. Raison: ${reason || "Non spécifiée"}`
+    );
+    res.status(200).json({
+      message: `Joueur crédité avec succès.`,
+      newBalance: updatedUser.balance,
+    });
+  } catch (error) {
+    console.error(`Erreur lors du crédit pour ${lowerCaseUsername}:`, error);
+    res.status(500).json({ message: "Erreur serveur interne lors du crédit." });
   }
 });
 
