@@ -1,10 +1,14 @@
 // routes/internal.js
 const express = require("express");
+const mongoose = require("mongoose"); // Nécessaire pour vérifier les ObjectId potentiellement
 const TemporaryCode = require("../models/TemporaryCode");
 const User = require("../models/User");
-// Vérifiez attentivement cette ligne d'import :
-const { authenticateInternal } = require("../middleware/auth");
 const ShopItem = require("../models/ShopItem");
+const PlayerQuest = require("../models/PlayerQuest"); // <<< Importer PlayerQuest
+const QuestDefinition = require("../models/QuestDefinition"); // <<< Importer QuestDefinition
+const PendingDelivery = require("../models/PendingDelivery"); // <<< Importer PendingDelivery
+const { authenticateInternal } = require("../middleware/auth");
+const { sendRconCommand } = require("../utils/rconClient"); // <<< Importer sendRconCommand
 
 const router = express.Router();
 
@@ -270,12 +274,9 @@ router.post("/credit-balance", authenticateInternal, async (req, res) => {
   const numAmount = parseFloat(amount);
   if (isNaN(numAmount) || numAmount <= 0) {
     // On ne crédite que des montants positifs
-    return res
-      .status(400)
-      .json({
-        message:
-          "Le montant à créditer doit être un nombre strictement positif.",
-      });
+    return res.status(400).json({
+      message: "Le montant à créditer doit être un nombre strictement positif.",
+    });
   }
   const lowerCaseUsername = username.toLowerCase();
 
@@ -309,6 +310,238 @@ router.post("/credit-balance", authenticateInternal, async (req, res) => {
   } catch (error) {
     console.error(`Erreur lors du crédit pour ${lowerCaseUsername}:`, error);
     res.status(500).json({ message: "Erreur serveur interne lors du crédit." });
+  }
+});
+
+// POST /api/internal/claim-all-rewards
+router.post("/claim-all-rewards", authenticateInternal, async (req, res) => {
+  const { username } = req.body;
+
+  if (!username) {
+    return res.status(400).json({ message: "Username manquant." });
+  }
+  const lowerCaseUsername = username.toLowerCase();
+
+  // Utiliser une session pour regrouper les mises à jour DB si possible
+  const dbSession = await mongoose.startSession();
+  let rewardsSummary = {
+    money: 0,
+    xp: 0,
+    items: [],
+    errors: [],
+    successes: [],
+  };
+  let questIdsToUpdate = [];
+  let finalBalance = null;
+
+  try {
+    await dbSession.withTransaction(async () => {
+      // 1. Trouver l'utilisateur
+      const user = await User.findOne({ username: lowerCaseUsername }).session(
+        dbSession
+      );
+      if (!user) {
+        // Pas besoin de transaction si l'user n'existe pas
+        // await dbSession.abortTransaction(); // Inutile avec withTransaction qui rollback
+        throw new Error(`Utilisateur ${username} non trouvé.`);
+      }
+      finalBalance = user.balance; // Solde initial
+
+      // 2. Trouver les quêtes complétées et non réclamées, peupler la définition
+      const completedQuests = await PlayerQuest.find({
+        userId: user._id,
+        status: "completed",
+      })
+        .populate("questDefinitionId")
+        .session(dbSession);
+
+      if (completedQuests.length === 0) {
+        // await dbSession.abortTransaction(); // Inutile
+        // Pas une erreur, juste rien à réclamer
+        purchaseStatus = "no_quests"; // Pour indiquer qu'il ne faut rien faire après
+        return; // Sortir de withTransaction
+      }
+
+      console.log(
+        `[Claim Rewards] ${completedQuests.length} quête(s) complétée(s) trouvée(s) pour ${username}`
+      );
+      questIdsToUpdate = completedQuests.map((q) => q._id); // IDs des PlayerQuest à mettre à jour
+
+      // 3. Agréger les récompenses et préparer les mises à jour DB
+      let totalMoneyReward = 0;
+      let totalXpReward = 0;
+      let itemsToGive = {}; // { 'minecraft:diamond': 5, 'minecraft:iron_ingot': 10 }
+
+      for (const quest of completedQuests) {
+        if (
+          !quest.questDefinitionId ||
+          typeof quest.questDefinitionId !== "object"
+        ) {
+          console.warn(
+            `[Claim Rewards] Définition manquante pour PlayerQuest ${quest._id}, récompenses ignorées.`
+          );
+          continue; // Ignorer cette quête si la définition manque
+        }
+        const definition = quest.questDefinitionId;
+        for (const reward of definition.rewards) {
+          switch (reward.type) {
+            case "money":
+              totalMoneyReward += reward.amount || 0;
+              break;
+            case "xp":
+              totalXpReward += reward.amount || 0;
+              break;
+            case "item":
+              if (reward.itemId) {
+                const currentQty = itemsToGive[reward.itemId] || 0;
+                itemsToGive[reward.itemId] =
+                  currentQty + (reward.quantity || 1);
+              }
+              break;
+          }
+        }
+        // Ajouter les récompenses au résumé pour la réponse finale
+        rewardsSummary.successes.push(
+          `Récompenses pour '${definition.title}' agrégées.`
+        );
+      }
+
+      // 4. Appliquer les mises à jour DB (Argent + Statut Quêtes) atomiquement
+      if (totalMoneyReward > 0) {
+        user.balance += totalMoneyReward; // Met à jour l'objet en mémoire
+      }
+      // Sauver l'utilisateur (met à jour le solde)
+      await user.save({ session: dbSession });
+      finalBalance = user.balance; // Nouveau solde après ajout argent
+
+      // Marquer toutes les quêtes traitées comme réclamées
+      if (questIdsToUpdate.length > 0) {
+        await PlayerQuest.updateMany(
+          { _id: { $in: questIdsToUpdate } },
+          { $set: { status: "reward_claimed", claimedAt: new Date() } }
+        ).session(dbSession);
+      }
+
+      rewardsSummary.money = totalMoneyReward;
+      rewardsSummary.xp = totalXpReward;
+      rewardsSummary.items = Object.entries(itemsToGive).map(([id, qty]) => ({
+        itemId: id,
+        quantity: qty,
+      }));
+
+      console.log(
+        `[Claim Rewards] Transaction DB pour ${username} OK. Argent: ${totalMoneyReward}, XP: ${totalXpReward}, Items: ${JSON.stringify(
+          rewardsSummary.items
+        )}`
+      );
+      // Si on arrive ici sans erreur, la transaction sera committée
+      purchaseStatus = "db_success";
+    }); // Fin de session.withTransaction()
+
+    // --- Hors Transaction : Exécution RCON si DB OK ---
+    if (purchaseStatus === "db_success") {
+      console.log(`[Claim Rewards] Exécution RCON pour ${username}...`);
+      let rconErrors = [];
+
+      // Exécuter la commande XP (si > 0)
+      if (rewardsSummary.xp > 0) {
+        const xpCommand = `xp add ${username} ${rewardsSummary.xp} levels`; // ou 'points' selon le besoin
+        const xpResult = await sendRconCommand(xpCommand);
+        if (!xpResult.success) {
+          console.error(
+            `[Claim Rewards] Echec RCON XP pour ${username}: ${xpResult.error}`
+          );
+          rconErrors.push(`XP (${rewardsSummary.xp}) : ${xpResult.error}`);
+          // QUE FAIRE? Pour l'instant on loggue et continue
+        } else {
+          rewardsSummary.successes.push(`XP (${rewardsSummary.xp}) donné.`);
+        }
+      }
+
+      // Exécuter les commandes Give pour chaque item
+      for (const item of rewardsSummary.items) {
+        // S'assurer que l'ID est bien formaté (ex: minecraft:diamond)
+        const fullItemId = item.itemId.includes(":")
+          ? item.itemId
+          : `minecraft:${item.itemId}`;
+        const giveCommand = `give ${username} ${fullItemId} ${item.quantity}`;
+        const giveResult = await sendRconCommand(giveCommand);
+        if (!giveResult.success) {
+          console.error(
+            `[Claim Rewards] Echec RCON Give ${item.quantity}x ${item.itemId} pour ${username}: ${giveResult.error}`
+          );
+          rconErrors.push(
+            `${item.quantity}x ${item.itemId}: ${giveResult.error}`
+          );
+          // Créer une livraison en attente pour cet item spécifique
+          try {
+            const pending = new PendingDelivery({
+              buyerUserId: user._id, // Utiliser l'ID user trouvé au début (nécessite de le sortir de la transaction)
+              buyerUsername: lowerCaseUsername,
+              itemId: item.itemId,
+              quantity: item.quantity,
+              itemName: item.itemId, // Utiliser l'ID comme nom par défaut ici
+              status: "pending",
+              purchaseTransactionId: `claim-${Date.now()}`, // ID de référence
+            });
+            await pending.save();
+            rewardsSummary.successes.push(
+              `${item.quantity}x ${item.itemId} mis en attente (échec RCON).`
+            );
+          } catch (pendingError) {
+            console.error(
+              `[Claim Rewards] ERREUR CRITIQUE lors de la création PendingDelivery pour ${item.itemId}: ${pendingError}`
+            );
+            // Logguer ++
+          }
+        } else {
+          rewardsSummary.successes.push(
+            `${item.quantity}x ${item.itemId} donné.`
+          );
+        }
+      }
+
+      rewardsSummary.errors = rconErrors;
+
+      // Renvoyer le résumé complet
+      return res.status(200).json({
+        message: `Réclamations traitées. ${
+          rconErrors.length > 0
+            ? "Certaines récompenses n'ont pu être données via RCON et ont été mises en attente (/redeem)."
+            : ""
+        }`,
+        summary: rewardsSummary,
+        newBalance: finalBalance,
+      });
+    } else if (purchaseStatus === "no_quests") {
+      return res
+        .status(200)
+        .json({
+          message: "Aucune quête terminée à réclamer.",
+          summary: rewardsSummary,
+          newBalance: finalBalance,
+        });
+    } else {
+      // La transaction DB a échoué, l'erreur a déjà été levée
+      // Normalement on n'arrive pas ici avec withTransaction
+      throw new Error("La transaction de réclamation a échoué.");
+    }
+  } catch (error) {
+    console.error(
+      `Erreur globale lors de la réclamation pour ${lowerCaseUsername}:`,
+      error.message
+    );
+    res
+      .status(400)
+      .json({
+        message:
+          error.message || "Erreur lors de la réclamation des récompenses.",
+      });
+  } finally {
+    await dbSession.endSession();
+    console.log(
+      `[Claim Rewards] Session MongoDB terminée pour ${lowerCaseUsername}`
+    );
   }
 });
 

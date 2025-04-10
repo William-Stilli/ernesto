@@ -2,23 +2,17 @@
 require("dotenv").config();
 const express = require("express");
 const connectDB = require("./db");
-const cors = require("cors");
 
 // Importer les routeurs
 const authRoutes = require("./routes/auth");
 const shopRoutes = require("./routes/shop");
 const internalRoutes = require("./routes/internal");
-const userRoutes = require("./routes/users"); // <<< AJOUTER CET IMPORT
-
-const corsOptions = {
-  origin: "http://localhost:3001", // Remplacez par l'URL de votre frontend
-  optionsSuccessStatus: 200, // Certains navigateurs anciens (IE11, divers SmartTVs) bloquent sur 204
-};
+const userRoutes = require("./routes/users");
+const questRoutes = require("./routes/quests"); // <<< IMPORTER routes/quests.js
+const adminQuestRoutes = require("./routes/admin_quests"); // <<< IMPORTER routes/admin_quests.js
 
 // Initialiser l'application Express
 const app = express();
-
-app.use(cors(corsOptions)); // Utiliser CORS avec les options définies
 
 // Connexion à la base de données MongoDB
 connectDB();
@@ -30,12 +24,14 @@ app.use(express.json());
 // Définir les routes
 app.use("/api/auth", authRoutes);
 app.use("/api/shop", shopRoutes);
-app.use("/api/internal", internalRoutes);
-app.use("/api/users", userRoutes); // <<< AJOUTER CETTE LIGNE pour monter les routes utilisateur
+app.use("/api/internal", internalRoutes); // Contient maintenant /claim-all-rewards
+app.use("/api/users", userRoutes);
+app.use("/api/quests", questRoutes); // <<< MONTER /api/quests
+app.use("/api/admin/quests", adminQuestRoutes); // <<< MONTER /api/admin/quests
 
 // Route de test simple
 app.get("/", (req, res) => {
-  res.send("API Minecraft Shop fonctionnelle!");
+  res.send("API Minecraft Shop + Quests fonctionnelle!"); // Message mis à jour
 });
 
 // Gestionnaire d'erreurs global (simple)
