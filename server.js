@@ -10,6 +10,7 @@ const internalRoutes = require("./routes/internal");
 const userRoutes = require("./routes/users");
 const questRoutes = require("./routes/quests"); // <<< IMPORTER routes/quests.js
 const adminQuestRoutes = require("./routes/admin_quests"); // <<< IMPORTER routes/admin_quests.js
+const cors = require("cors");
 
 // Initialiser l'application Express
 const app = express();
@@ -19,7 +20,13 @@ connectDB();
 
 // Middlewares globaux
 app.use(express.json());
-// app.use(cors(...)); // Si besoin
+
+const corsOptions = {
+  origin: "http://localhost:3001", // Remplacez par l'URL de votre frontend
+  optionsSuccessStatus: 200, // Certains navigateurs anciens (IE11, divers SmartTVs) bloquent sur 204
+};
+
+app.use(cors(corsOptions)); // Si besoin
 
 // Définir les routes
 app.use("/api/auth", authRoutes);

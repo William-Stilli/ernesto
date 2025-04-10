@@ -12,24 +12,44 @@ const { sendRconCommand } = require("../utils/rconClient");
 const router = express.Router();
 
 // --- GET /items reste inchangé ---
+// routes/shop.js (Route GET /items corrigée)
+
 router.get("/items", async (req, res) => {
   try {
     const items = await ShopItem.find({ isEnabled: true })
+      // Ajoute adminSellPrice à la sélection
       .select(
-        "itemId name description price quantity sellerUsername createdAt _id"
+        "itemId name description price quantity sellerUsername createdAt adminSellPrice _id"
       )
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean(); // Utiliser lean() pour des objets JS simples peut être bien ici
 
-    const formattedItems = items.map((item) => ({
-      listingId: item._id,
-      itemId: item.itemId,
-      name: item.name,
-      description: item.description,
-      price: item.price,
-      quantity: item.quantity,
-      seller: item.sellerUsername || "AdminShop",
-      listedAt: item.createdAt,
-    }));
+    const formattedItems = items.map((item) => {
+      // Objet de base
+      let formatted = {
+        listingId: item._id.toString(), // Convertir ObjectId en string
+        itemId: item.itemId,
+        name: item.name,
+        description: item.description,
+        price: item.price, // Prix d'achat par le joueur
+        quantity: item.quantity,
+        seller: item.sellerUsername || "AdminShop",
+        listedAt: item.createdAt,
+        adminSellPrice: null, // Initialiser à null par défaut
+      };
+
+      // Ajouter adminSellPrice seulement si c'est un item Admin et qu'il a une valeur
+      if (
+        !item.sellerUsername &&
+        typeof item.adminSellPrice === "number" &&
+        item.adminSellPrice >= 0
+      ) {
+        formatted.adminSellPrice = item.adminSellPrice;
+      }
+
+      return formatted;
+    });
+
     res.json(formattedItems);
   } catch (error) {
     console.error("Erreur lors de la récupération des items:", error);
