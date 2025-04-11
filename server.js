@@ -8,8 +8,9 @@ const authRoutes = require("./routes/auth");
 const shopRoutes = require("./routes/shop");
 const internalRoutes = require("./routes/internal");
 const userRoutes = require("./routes/users");
-const questRoutes = require("./routes/quests"); // <<< IMPORTER routes/quests.js
-const adminQuestRoutes = require("./routes/admin_quests"); // <<< IMPORTER routes/admin_quests.js
+const questRoutes = require("./routes/quests");
+const adminQuestRoutes = require("./routes/admin_quests");
+const adminTodoRoutes = require("./routes/admin_todos"); // <<< AJOUT: Importer le routeur pour les todos admin
 const cors = require("cors");
 
 // Initialiser l'application Express
@@ -21,28 +22,40 @@ connectDB();
 // Middlewares globaux
 app.use(express.json());
 
+// Configuration CORS (existante, fournie par l'utilisateur - ajout de credentials)
 const corsOptions = {
-  origin: "http://localhost:3001", // Remplacez par l'URL de votre frontend
-  optionsSuccessStatus: 200, // Certains navigateurs anciens (IE11, divers SmartTVs) bloquent sur 204
+  origin: "http://localhost:3001", // Assurez-vous que cette origine est correcte
+  optionsSuccessStatus: 200,
+  credentials: true, // <<< AJOUT IMPORTANT: Nécessaire pour les tokens Bearer cross-origin
 };
 
-app.use(cors(corsOptions)); // Si besoin
+app.use(cors(corsOptions)); // Appliquer CORS
 
 // Définir les routes
 app.use("/api/auth", authRoutes);
 app.use("/api/shop", shopRoutes);
-app.use("/api/internal", internalRoutes); // Contient maintenant /claim-all-rewards
+app.use("/api/internal", internalRoutes);
 app.use("/api/users", userRoutes);
-app.use("/api/quests", questRoutes); // <<< MONTER /api/quests
-app.use("/api/admin/quests", adminQuestRoutes); // <<< MONTER /api/admin/quests
+app.use("/api/quests", questRoutes);
+app.use("/api/admin/quests", adminQuestRoutes);
+app.use("/api/admin/todos", adminTodoRoutes); // <<< AJOUT: Monter les routes pour les todos admin
 
 // Route de test simple
 app.get("/", (req, res) => {
-  res.send("API Minecraft Shop + Quests fonctionnelle!"); // Message mis à jour
+  res.send("API Minecraft Shop + Quests + Todos fonctionnelle!"); // Message mis à jour
 });
 
-// Gestionnaire d'erreurs global (simple)
+// Gestionnaire d'erreurs global (simple - légèrement amélioré pour CORS)
 app.use((err, req, res, next) => {
+  // Gestion spécifique de l'erreur CORS si elle est levée par le middleware cors
+  if (err.message === "Origine non autorisée par CORS" && !res.headersSent) {
+    console.warn(`Blocage CORS pour origine: ${req.header("Origin")}`);
+    return res.status(403).json({ message: "Accès non autorisé (CORS)" });
+  }
+  // Continuer pour les autres erreurs ou si les headers sont déjà envoyés
+  if (res.headersSent) {
+    return next(err);
+  }
   console.error("Erreur non gérée:", err.stack);
   res.status(500).json({ message: "Quelque chose s'est mal passé !" });
 });
