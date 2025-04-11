@@ -2,6 +2,7 @@
 const express = require("express");
 const router = express.Router();
 const Todo = require("../models/Todo"); // <<< Importer le modèle Todo
+const mongoose = require("mongoose"); // Importé pour ObjectId
 
 // --- Middleware Placeholder pour l'Authentification Admin ---
 // IMPORTANT: Ceci est un placeholder. À remplacer par une vraie vérification admin.
@@ -37,11 +38,9 @@ router.post("/", async (req, res) => {
 
   // Validation simple
   if (!text || typeof text !== "string" || text.trim().length === 0) {
-    return res
-      .status(400)
-      .json({
-        message: 'Le champ "text" est requis et ne peut pas être vide.',
-      });
+    return res.status(400).json({
+      message: 'Le champ "text" est requis et ne peut pas être vide.',
+    });
   }
 
   try {
@@ -98,11 +97,9 @@ router.patch("/:id", async (req, res) => {
 
   // S'assurer qu'il y a quelque chose à mettre à jour
   if (Object.keys(updateData).length === 0) {
-    return res
-      .status(400)
-      .json({
-        message: "Aucun champ à mettre à jour fourni (text ou isCompleted).",
-      });
+    return res.status(400).json({
+      message: "Aucun champ à mettre à jour fourni (text ou isCompleted).",
+    });
   }
 
   try {
@@ -160,6 +157,8 @@ router.delete("/:id", async (req, res) => {
     // res.status(204).send();
   } catch (error) {
     console.error(`Erreur lors de la suppression de la todo ${id}:`, error);
+    console.log(error);
+
     res
       .status(500)
       .json({ message: "Erreur serveur interne lors de la suppression." });
