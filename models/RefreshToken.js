@@ -4,10 +4,11 @@ const mongoose = require("mongoose");
 const refreshTokenSchema = new mongoose.Schema(
   {
     token: {
-      // Le refresh token lui-même. Pour plus de sécu, on pourrait stocker un hash.
+      // Le HASH (SHA-256) du refresh token JWT.
+      // Ne pas stocker le token JWT brut ici.
       type: String,
       required: true,
-      unique: true,
+      unique: true, // L'unicité du hash est attendue
       index: true, // Important pour la recherche rapide lors du refresh/logout
     },
     userId: {
@@ -18,17 +19,17 @@ const refreshTokenSchema = new mongoose.Schema(
       index: true,
     },
     expiresAt: {
-      // Date d'expiration de CE refresh token
+      // Date d'expiration de CE refresh token (associé au hash stocké)
       type: Date,
       required: true,
     },
-    // On pourrait ajouter : createdAt, revokedAt, ipAddress, userAgent etc.
+    // On pourrait ajouter : createdAt, revoked (boolean), ipAddress, userAgent etc.
   },
-  { timestamps: true }
-); // Ajoute createdAt et updatedAt
+  { timestamps: true } // Ajoute createdAt et updatedAt
+);
 
-// Optionnel : Index TTL pour que MongoDB nettoie automatiquement les tokens expirés
-// Bien que la vérification manuelle soit faite, ça aide à garder la collection propre.
+// Optionnel mais recommandé: Index TTL pour que MongoDB nettoie automatiquement les tokens expirés
+// même si la vérification manuelle est faite. Se base sur la date d'expiration stockée.
 // refreshTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 module.exports = mongoose.model("RefreshToken", refreshTokenSchema);

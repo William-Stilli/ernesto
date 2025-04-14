@@ -1,27 +1,22 @@
 // routes/admin_todos.js
 const express = require("express");
 const router = express.Router();
-const Todo = require("../models/Todo"); // <<< Importer le modèle Todo
-const mongoose = require("mongoose"); // Importé pour ObjectId
+const Todo = require("../models/Todo");
+const mongoose = require("mongoose");
+const { authenticateToken, isAdmin } = require("../middleware/auth"); // <<< Importer les middlewares réels
 
-// --- Middleware Placeholder pour l'Authentification Admin ---
-// IMPORTANT: Ceci est un placeholder. À remplacer par une vraie vérification admin.
-const isAdmin = (req, res, next) => {
-  console.warn(
-    `[ADMIN AUTH STUB] Vérification Admin non implémentée pour ${req.method} ${req.originalUrl}. Accès autorisé pour le développement.`
-  );
-  next();
-};
-
-// Appliquer le middleware admin à toutes les routes de ce fichier
+// --- Appliquer les Middlewares d'Authentification et d'Autorisation ---
+// 1. Vérifier si l'utilisateur est connecté (JWT valide)
+// 2. Vérifier si l'utilisateur connecté a le rôle 'admin'
+router.use(authenticateToken);
 router.use(isAdmin);
+// --- Fin Application Middlewares ---
 
-// --- Routes CRUD pour la Todo List Admin ---
+// Le reste des routes CRUD reste identique...
 
 // GET /api/admin/todos - Lister toutes les tâches
 router.get("/", async (req, res) => {
   try {
-    // Trier par date de création, les plus récentes en premier
     const todos = await Todo.find().sort({ createdAt: -1 });
     res.status(200).json(todos);
   } catch (error) {
@@ -36,7 +31,6 @@ router.get("/", async (req, res) => {
 router.post("/", async (req, res) => {
   const { text } = req.body;
 
-  // Validation simple
   if (!text || typeof text !== "string" || text.trim().length === 0) {
     return res.status(400).json({
       message: 'Le champ "text" est requis et ne peut pas être vide.',
@@ -46,16 +40,13 @@ router.post("/", async (req, res) => {
   try {
     const newTodo = new Todo({
       text: text.trim(),
-      // isCompleted sera false par défaut
     });
     await newTodo.save();
     console.log("[Admin Todos] Nouvelle tâche créée:", newTodo._id);
-    // Renvoyer la tâche créée avec le statut 201
     res.status(201).json(newTodo);
   } catch (error) {
     console.error("Erreur lors de la création de la todo:", error);
     if (error.name === "ValidationError") {
-      // Devrait être attrapé par la validation Mongoose aussi
       return res
         .status(400)
         .json({ message: `Erreur de validation: ${error.message}` });
@@ -66,17 +57,15 @@ router.post("/", async (req, res) => {
   }
 });
 
-// PATCH /api/admin/todos/:id - Mettre à jour une tâche (texte ou statut complété)
+// PATCH /api/admin/todos/:id - Mettre à jour une tâche
 router.patch("/:id", async (req, res) => {
   const { id } = req.params;
   const { text, isCompleted } = req.body;
 
-  // Vérifier si l'ID est un ObjectId MongoDB valide
   if (!mongoose.Types.ObjectId.isValid(id)) {
     return res.status(400).json({ message: `ID de tâche invalide: ${id}` });
   }
 
-  // Construire l'objet de mise à jour
   const updateData = {};
   if (text !== undefined) {
     if (typeof text !== "string" || text.trim().length === 0) {
@@ -95,7 +84,6 @@ router.patch("/:id", async (req, res) => {
     updateData.isCompleted = isCompleted;
   }
 
-  // S'assurer qu'il y a quelque chose à mettre à jour
   if (Object.keys(updateData).length === 0) {
     return res.status(400).json({
       message: "Aucun champ à mettre à jour fourni (text ou isCompleted).",
@@ -103,9 +91,6 @@ router.patch("/:id", async (req, res) => {
   }
 
   try {
-    // Trouver par ID et mettre à jour
-    // { new: true } -> renvoie le document APRES la mise à jour
-    // { runValidators: true } -> force Mongoose à relancer les validations (ex: sur le type de isCompleted)
     const updatedTodo = await Todo.findByIdAndUpdate(
       id,
       { $set: updateData },
@@ -119,7 +104,7 @@ router.patch("/:id", async (req, res) => {
     }
 
     console.log("[Admin Todos] Tâche mise à jour:", updatedTodo._id);
-    res.status(200).json(updatedTodo); // Renvoyer la tâche mise à jour
+    res.status(200).json(updatedTodo);
   } catch (error) {
     console.error(`Erreur lors de la mise à jour de la todo ${id}:`, error);
     if (error.name === "ValidationError") {
@@ -142,7 +127,6 @@ router.delete("/:id", async (req, res) => {
   }
 
   try {
-    // Trouver par ID et supprimer
     const result = await Todo.findByIdAndDelete(id);
 
     if (!result) {
@@ -153,12 +137,8 @@ router.delete("/:id", async (req, res) => {
 
     console.log("[Admin Todos] Tâche supprimée:", id);
     res.status(200).json({ message: `Tâche ${id} supprimée avec succès.` });
-    // Ou renvoyer 204 No Content sans corps:
-    // res.status(204).send();
   } catch (error) {
     console.error(`Erreur lors de la suppression de la todo ${id}:`, error);
-    console.log(error);
-
     res
       .status(500)
       .json({ message: "Erreur serveur interne lors de la suppression." });

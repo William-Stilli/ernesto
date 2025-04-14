@@ -1,19 +1,24 @@
 // routes/auth.js
 const express = require("express");
 const jwt = require("jsonwebtoken");
-const ms = require("ms"); // Pour calculer les dates d'expiration
+const ms = require("ms");
+const crypto = require("crypto"); // <<< Importer le module crypto pour le hachage
 const TemporaryCode = require("../models/TemporaryCode");
 const User = require("../models/User");
-const RefreshToken = require("../models/RefreshToken"); // <<< Importer le nouveau modèle
+const RefreshToken = require("../models/RefreshToken");
 require("dotenv").config();
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET;
-const ACCESS_TOKEN_EXPIRY = process.env.ACCESS_TOKEN_EXPIRY || "15m"; //TODO: Need to be changed to 15m
+const ACCESS_TOKEN_EXPIRY = process.env.ACCESS_TOKEN_EXPIRY || "15m";
 const REFRESH_TOKEN_EXPIRY = process.env.REFRESH_TOKEN_EXPIRY || "7d";
 
-// --- LOGIN : Renvoie maintenant Access + Refresh Token ---
-// POST /api/auth/login
+// --- Helper pour hacher les tokens ---
+function hashToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+// --- LOGIN : Génère Access + Refresh Token, stocke le HASH du Refresh Token ---
 router.post("/login", async (req, res) => {
   const { username, code } = req.body;
   const lowerCaseUsername = username?.toLowerCase();
@@ -23,222 +28,265 @@ router.post("/login", async (req, res) => {
   }
 
   try {
+    // 1. Valider le code temporaire
     const tempCode = await TemporaryCode.findOneAndDelete({
       username: lowerCaseUsername,
       code: code,
     });
 
-    if (tempCode) {
-      const user = await User.findOne({ username: lowerCaseUsername });
-      if (!user) {
-        console.warn(
-          `Utilisateur ${lowerCaseUsername} non trouvé après validation du code.`
-        );
-        return res
-          .status(401)
-          .json({ message: "Utilisateur associé non trouvé." });
-      }
-
-      // --- Génération des Tokens ---
-      const userPayload = { id: user._id, username: user.username };
-
-      // 1. Access Token (courte durée)
-      const accessToken = jwt.sign(userPayload, JWT_SECRET, {
-        expiresIn: ACCESS_TOKEN_EXPIRY,
-      });
-
-      // 2. Refresh Token (longue durée - utilisant aussi JWT ici pour simplicité)
-      // On pourrait utiliser une chaîne aléatoire sécurisée + la stocker.
-      // Utiliser JWT permet de vérifier sa propre expiration/signature facilement.
-      const refreshTokenPayload = { id: user._id, type: "refresh" }; // Payload minimal
-      const refreshToken = jwt.sign(refreshTokenPayload, JWT_SECRET, {
-        expiresIn: REFRESH_TOKEN_EXPIRY,
-      });
-
-      // Calculer la date d'expiration pour le stockage en DB
-      const refreshTokenExpiresAt = new Date(
-        Date.now() + ms(REFRESH_TOKEN_EXPIRY)
+    if (!tempCode) {
+      console.log(
+        `Login échoué (code invalide/expiré) pour ${lowerCaseUsername}`
       );
-
-      // --- Stockage du Refresh Token ---
-      // Supprimer les anciens refresh tokens pour cet utilisateur (sécurité/propreté)
-      await RefreshToken.deleteMany({ userId: user._id });
-
-      // Enregistrer le nouveau refresh token
-      const storedRefreshToken = new RefreshToken({
-        token: refreshToken, // Ici on stocke le token JWT lui-même
-        userId: user._id,
-        expiresAt: refreshTokenExpiresAt,
-      });
-      await storedRefreshToken.save();
-
-      console.log(`Login réussi, tokens générés pour ${user.username}`);
-
-      // --- Réponse au Client ---
-      // Renvoyer LES DEUX tokens
-      res.json({
-        accessToken: accessToken,
-        refreshToken: refreshToken,
-        username: user.username,
-        // Optionnel: renvoyer l'expiration de l'access token pour aider le client
-        // expiresIn: ms(ACCESS_TOKEN_EXPIRY) // en millisecondes
-      });
-    } else {
-      console.log(`Tentative de login échouée pour ${lowerCaseUsername}`);
-      res
+      return res
         .status(401)
         .json({ message: "Code invalide, expiré ou déjà utilisé." });
     }
+
+    // 2. Trouver l'utilisateur associé (avec son rôle)
+    const user = await User.findOne({ username: lowerCaseUsername }).select(
+      "+role"
+    );
+    if (!user) {
+      console.warn(
+        `Utilisateur ${lowerCaseUsername} non trouvé après validation du code.`
+      );
+      return res
+        .status(401)
+        .json({ message: "Utilisateur associé au code non trouvé." });
+    }
+
+    // --- Génération des Tokens ---
+    const userPayload = {
+      id: user._id,
+      username: user.username,
+      role: user.role,
+    };
+    const accessToken = jwt.sign(userPayload, JWT_SECRET, {
+      expiresIn: ACCESS_TOKEN_EXPIRY,
+    });
+
+    const refreshTokenPayload = { id: user._id, type: "refresh" }; // Payload minimal pour refresh
+    const refreshToken = jwt.sign(refreshTokenPayload, JWT_SECRET, {
+      expiresIn: REFRESH_TOKEN_EXPIRY,
+    });
+
+    // --- Hachage et Stockage du Refresh Token ---
+    const refreshTokenHash = hashToken(refreshToken); // <<< Hacher le token
+    const refreshTokenExpiresAt = new Date(
+      Date.now() + ms(REFRESH_TOKEN_EXPIRY)
+    );
+
+    // Supprimer les anciens tokens pour cet user
+    await RefreshToken.deleteMany({ userId: user._id });
+
+    // Enregistrer le NOUVEAU hash
+    const storedRefreshToken = new RefreshToken({
+      token: refreshTokenHash, // <<< Stocker le HASH
+      userId: user._id,
+      expiresAt: refreshTokenExpiresAt,
+    });
+    await storedRefreshToken.save();
+
+    console.log(
+      `Login réussi, tokens générés pour ${user.username} (Rôle: ${user.role}), hash refresh token stocké.`
+    );
+
+    // --- Réponse au Client ---
+    // Renvoyer les tokens originaux (non hachés)
+    res.json({
+      accessToken: accessToken,
+      refreshToken: refreshToken, // Le client reçoit le JWT, pas le hash
+      username: user.username,
+    });
   } catch (error) {
-    console.error("Erreur lors du login:", error);
-    res.status(500).json({ message: "Erreur serveur interne." });
+    console.error(`Erreur lors du login pour ${lowerCaseUsername}:`, error);
+    res
+      .status(500)
+      .json({ message: "Erreur serveur interne pendant le login." });
   }
 });
 
-// --- REFRESH : Obtient un nouvel Access Token via un Refresh Token ---
-// POST /api/auth/refresh
+// --- REFRESH : Implémente la Rotation des Refresh Tokens ---
 router.post("/refresh", async (req, res) => {
-  const { token: providedRefreshToken } = req.body; // Attendre le refresh token dans le body
+  const { token: providedRefreshToken } = req.body; // Le JWT refresh fourni par le client
 
   if (!providedRefreshToken) {
     return res.status(401).json({ message: "Refresh token manquant." });
   }
 
+  // 1. Hacher le token fourni pour chercher en DB
+  const providedTokenHash = hashToken(providedRefreshToken);
+
   try {
-    // 1. Chercher le token dans la base de données
+    // 2. Chercher le HASH dans la base de données
     const storedToken = await RefreshToken.findOne({
-      token: providedRefreshToken,
+      token: providedTokenHash,
     });
 
+    // --- Vérification d'existence et d'expiration en DB ---
     if (!storedToken) {
-      console.log("Refresh token non trouvé en DB.");
-      // Sécurité: Si un token inconnu est présenté, il pourrait être volé/compromis.
-      // On pourrait invalider TOUS les refresh tokens de l'utilisateur potentiel
-      // si on pouvait extraire l'userId du token JWT fourni (même s'il n'est pas en DB).
+      // Le hash n'est pas trouvé. Soit le token est invalide, soit il a déjà été utilisé (rotation).
+      // Optionnel : Sécurité renforcée -> essayer de vérifier le JWT fourni. S'il est valide
+      // mais pas en DB, cela pourrait indiquer une tentative de rejeu d'un token déjà utilisé/volé.
+      // On pourrait invalider tous les tokens de l'utilisateur concerné.
+      console.warn(
+        `Refresh token (hash: ...${providedTokenHash.slice(
+          -6
+        )}) non trouvé en DB. Possible réutilisation ou invalidité.`
+      );
       return res
         .status(403)
-        .json({ message: "Refresh token invalide ou révoqué (not found)." });
+        .json({ message: "Refresh token invalide, révoqué ou déjà utilisé." });
     }
 
-    // 2. Vérifier si le token stocké en DB est expiré
     if (new Date() > storedToken.expiresAt) {
-      console.log(`Refresh token ${storedToken._id} trouvé mais expiré en DB.`);
+      console.log(
+        `Refresh token ${storedToken._id} (hash: ...${providedTokenHash.slice(
+          -6
+        )}) trouvé mais expiré en DB.`
+      );
       await RefreshToken.findByIdAndDelete(storedToken._id); // Nettoyer
       return res.status(403).json({ message: "Refresh token expiré." });
     }
 
-    // 3. Vérifier la validité du token JWT lui-même (signature, expiration propre au JWT)
-    //    et s'assurer qu'il correspond à l'utilisateur stocké.
+    // --- Vérification du JWT fourni (signature, expiration intrinsèque) ---
     let decodedRefresh;
     try {
       decodedRefresh = jwt.verify(providedRefreshToken, JWT_SECRET);
+      // Vérifier la correspondance User ID (sécurité supplémentaire)
       if (decodedRefresh.id !== storedToken.userId.toString()) {
         console.error(
-          `ERREUR DE SECURITE: UserID du JWT refresh (${decodedRefresh.id}) différent de UserID stocké (${storedToken.userId}) pour le token ${storedToken._id}`
+          `ERREUR SECURITE REFRESH: UserID JWT (${
+            decodedRefresh.id
+          }) != UserID DB (${
+            storedToken.userId
+          }) pour hash ...${providedTokenHash.slice(-6)}. Invalidation.`
         );
         await RefreshToken.findByIdAndDelete(storedToken._id); // Supprimer ce token suspect
         return res
           .status(403)
-          .json({ message: "Refresh token invalide (user mismatch)." });
+          .json({
+            message: "Refresh token invalide (incohérence utilisateur).",
+          });
       }
-      // Optionnel: Vérifier si le payload contient bien 'type: refresh' si on l'a mis
-      // if(decodedRefresh.type !== 'refresh') { ... }
     } catch (err) {
+      // Le JWT fourni est invalide (mauvaise signature, format, expiré selon le JWT lui-même)
       console.log(
-        `Erreur vérification JWT du refresh token ${storedToken._id}: ${err.message}`
+        `Erreur vérification JWT du refresh token fourni (hash: ...${providedTokenHash.slice(
+          -6
+        )}): ${err.message}`
       );
-      // Le token fourni n'est pas un JWT valide signé par nous OU est expiré (selon JWT)
-      await RefreshToken.findByIdAndDelete(storedToken._id); // Nettoyer le token de la DB
+      await RefreshToken.findByIdAndDelete(storedToken._id); // Nettoyer le token de la DB aussi
       return res
         .status(403)
-        .json({ message: "Refresh token invalide (JWT verification failed)." });
+        .json({ message: "Refresh token invalide (échec vérification JWT)." });
     }
 
-    // 4. Trouver l'utilisateur associé
-    const user = await User.findById(storedToken.userId);
+    // --- Si tout est OK jusqu'ici : Procéder à la rotation ---
+
+    // 4. Trouver l'utilisateur associé (pour générer le nouvel access token avec rôle)
+    const user = await User.findById(storedToken.userId).select("+role");
     if (!user) {
       console.error(
-        `Utilisateur ${storedToken.userId} introuvable pour le refresh token ${storedToken._id}`
+        `Utilisateur ${
+          storedToken.userId
+        } introuvable pour refresh token (hash: ...${providedTokenHash.slice(
+          -6
+        )}). Invalidation.`
       );
-      await RefreshToken.findByIdAndDelete(storedToken._id); // Nettoyer
+      await RefreshToken.findByIdAndDelete(storedToken._id);
       return res
         .status(403)
-        .json({ message: "Utilisateur associé introuvable." });
+        .json({ message: "Utilisateur associé au token introuvable." });
     }
 
-    // 5. Générer un NOUVEL Access Token
-    const newAccessTokenPayload = { id: user._id, username: user.username };
+    // 5. Générer le NOUVEL Access Token
+    const newAccessTokenPayload = {
+      id: user._id,
+      username: user.username,
+      role: user.role,
+    };
     const newAccessToken = jwt.sign(newAccessTokenPayload, JWT_SECRET, {
       expiresIn: ACCESS_TOKEN_EXPIRY,
     });
 
-    console.log(`Access token rafraîchi pour ${user.username}`);
+    // 6. Générer le NOUVEAU Refresh Token
+    const newRefreshTokenPayload = { id: user._id, type: "refresh" };
+    const newRefreshToken = jwt.sign(newRefreshTokenPayload, JWT_SECRET, {
+      expiresIn: REFRESH_TOKEN_EXPIRY,
+    });
+    const newRefreshTokenHash = hashToken(newRefreshToken); // <<< Hacher le nouveau
+    const newRefreshTokenExpiresAt = new Date(
+      Date.now() + ms(REFRESH_TOKEN_EXPIRY)
+    );
 
-    // --- Implémentation SANS rotation du Refresh Token ---
-    // On ne génère pas de nouveau refresh token, on renvoie juste le nouvel access token.
-    // L'ancien refresh token reste valide jusqu'à son expiration initiale.
+    // 7. Mettre à jour l'enregistrement en base avec le NOUVEAU hash et la NOUVELLE expiration
+    //    Ceci invalide l'ancien token (son hash ne correspondra plus)
+    storedToken.token = newRefreshTokenHash;
+    storedToken.expiresAt = newRefreshTokenExpiresAt;
+    await storedToken.save(); // Met à jour l'enregistrement existant
 
-    // --- Implémentation AVEC rotation du Refresh Token (plus sécurisé) ---
-    /*
-        // Générer un nouveau refresh token
-        const newRefreshTokenPayload = { id: user._id, type: 'refresh' };
-        const newRefreshToken = jwt.sign(newRefreshTokenPayload, JWT_SECRET, { expiresIn: REFRESH_TOKEN_EXPIRY });
-        const newRefreshTokenExpiresAt = new Date(Date.now() + ms(REFRESH_TOKEN_EXPIRY));
+    console.log(
+      `Access et Refresh tokens rafraîchis (rotation effectuée) pour ${user.username}.`
+    );
 
-        // Mettre à jour l'ancien token en DB avec le nouveau token et la nouvelle expiration
-        storedToken.token = newRefreshToken;
-        storedToken.expiresAt = newRefreshTokenExpiresAt;
-        await storedToken.save();
-
-        // Renvoyer les deux nouveaux tokens
-        return res.json({
-            accessToken: newAccessToken,
-            refreshToken: newRefreshToken // Renvoyer le NOUVEAU refresh token
-        });
-        */
-    // --- Fin de l'implémentation AVEC rotation ---
-
-    // Renvoyer uniquement le nouvel access token (version SANS rotation)
-    res.json({ accessToken: newAccessToken });
+    // 8. Renvoyer les DEUX nouveaux tokens au client
+    res.json({
+      accessToken: newAccessToken,
+      refreshToken: newRefreshToken, // <<< Renvoyer le NOUVEAU refresh token
+    });
   } catch (error) {
-    console.error("Erreur lors du rafraîchissement du token:", error);
-    res.status(500).json({ message: "Erreur serveur interne." });
+    console.error(
+      `Erreur lors du rafraîchissement du token (hash: ...${providedTokenHash.slice(
+        -6
+      )}):`,
+      error
+    );
+    res
+      .status(500)
+      .json({ message: "Erreur serveur interne pendant le rafraîchissement." });
   }
 });
 
-// --- LOGOUT : Invalide un Refresh Token ---
-// POST /api/auth/logout
+// --- LOGOUT : Invalide un Refresh Token en supprimant son hash ---
 router.post("/logout", async (req, res) => {
-  // Le client doit envoyer le REFRESH token qu'il veut invalider
   const { token: providedRefreshToken } = req.body;
 
   if (!providedRefreshToken) {
-    // On pourrait aussi invalider TOUS les refresh tokens si l'utilisateur est authentifié
-    // via un Access Token valide sur cet endpoint, mais demander le refresh token
-    // permet de cibler une session spécifique (ex: déconnexion d'un appareil).
     return res
       .status(400)
       .json({ message: "Refresh token requis pour la déconnexion." });
   }
 
+  // Hacher le token fourni pour le trouver en DB
+  const providedTokenHash = hashToken(providedRefreshToken);
+
   try {
-    // Simplement supprimer le refresh token de la base de données
-    const result = await RefreshToken.deleteOne({
-      token: providedRefreshToken,
-    });
+    // Supprimer l'enregistrement correspondant au hash
+    const result = await RefreshToken.deleteOne({ token: providedTokenHash });
 
     if (result.deletedCount === 0) {
-      console.log("Logout: Refresh token non trouvé ou déjà supprimé.");
+      console.log(
+        `Logout: Refresh token (hash: ...${providedTokenHash.slice(
+          -6
+        )}) non trouvé ou déjà supprimé.`
+      );
     } else {
-      console.log("Logout: Refresh token supprimé.");
+      console.log(
+        `Logout: Refresh token (hash: ...${providedTokenHash.slice(
+          -6
+        )}) supprimé.`
+      );
     }
 
-    // Toujours renvoyer un succès, même si le token n'existait pas/plus.
     res.status(200).json({ message: "Déconnexion réussie." });
   } catch (error) {
     console.error("Erreur lors de la déconnexion:", error);
-    res.status(500).json({ message: "Erreur serveur interne." });
+    res
+      .status(500)
+      .json({ message: "Erreur serveur interne lors de la déconnexion." });
   }
 });
 
-module.exports = router; // Assurez-vous d'exporter le routeur
+module.exports = router;

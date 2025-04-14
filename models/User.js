@@ -26,6 +26,14 @@ const userSchema = new mongoose.Schema(
       default: 0,
       min: 0, // Le solde ne devrait pas être négatif
     },
+    // --- AJOUT DU CHAMP ROLE ---
+    role: {
+      type: String,
+      enum: ["user", "admin"], // Définit les rôles possibles
+      default: "user",        // Rôle par défaut pour les nouveaux utilisateurs
+      required: true,
+    },
+    // --- FIN AJOUT ROLE ---
   },
   { timestamps: true }
 ); // Ajoute createdAt et updatedAt

@@ -1,45 +1,35 @@
-// routes/admin_quests.js (Version Complète avec CRUD implémenté)
-
+// routes/admin_quests.js
 const express = require("express");
 const router = express.Router();
-const QuestDefinition = require("../models/QuestDefinition"); // Modèle pour les définitions
-const PlayerQuest = require("../models/PlayerQuest"); // Pour la route /assign-to-all
-const User = require("../models/User"); // Pour la route /assign-to-all
-const ms = require("ms"); // Pour la route /assign-to-all
-// const mongoose = require('mongoose'); // Pas nécessaire ici si on n'utilise pas ObjectId directement
+const QuestDefinition = require("../models/QuestDefinition");
+const PlayerQuest = require("../models/PlayerQuest");
+const User = require("../models/User");
+const ms = require("ms"); // Utilisé dans assign-to-all
+const { authenticateToken, isAdmin } = require("../middleware/auth"); // <<< Importer les middlewares réels
+const mongoose = require("mongoose"); // Utilisé pour ObjectId dans assign-to-all
 
-// --- Middleware Placeholder pour l'Authentification Admin ---
-// IMPORTANT: Ceci est un placeholder. Il faudra implémenter une vraie
-// vérification pour s'assurer que seul un administrateur peut accéder
-// à ces routes (probablement via un rôle dans le token JWT ou un autre système).
-const isAdmin = (req, res, next) => {
-  console.warn(
-    `[ADMIN AUTH STUB] Vérification Admin non implémentée pour ${req.method} ${req.originalUrl}. Accès autorisé pour le développement.`
-  );
-  next(); // Pour l'instant, on laisse passer tout le monde
-};
-
-// Appliquer le middleware admin à toutes les routes de ce fichier
+// --- Appliquer les Middlewares d'Authentification et d'Autorisation ---
+// 1. Vérifier si l'utilisateur est connecté (JWT valide)
+// 2. Vérifier si l'utilisateur connecté a le rôle 'admin'
+router.use(authenticateToken);
 router.use(isAdmin);
+// --- Fin Application Middlewares ---
 
-// --- Routes CRUD pour les Définitions de Quêtes ---
+// Le reste des routes CRUD et assign-to-all reste identique...
 
 // POST /api/admin/quests - Créer une nouvelle définition de quête
 router.post("/", async (req, res) => {
   try {
     const { questId } = req.body;
-    // Validation minimale (le reste est géré par Mongoose)
     if (!questId) {
       return res.status(400).json({ message: "Le champ questId est requis." });
     }
-    // Vérifier si questId existe déjà
     const existingQuest = await QuestDefinition.findOne({ questId: questId });
     if (existingQuest) {
       return res.status(400).json({
         message: `Une définition de quête avec l'ID '${questId}' existe déjà.`,
       });
     }
-    // Créer et sauvegarder
     const newQuestDef = new QuestDefinition(req.body);
     await newQuestDef.save();
     console.log(
@@ -66,7 +56,6 @@ router.post("/", async (req, res) => {
 router.get("/", async (req, res) => {
   try {
     const filter = {};
-    // Filtrer par type
     if (req.query.type) {
       if (["daily", "weekly", "monthly"].includes(req.query.type)) {
         filter.type = req.query.type;
@@ -76,20 +65,18 @@ router.get("/", async (req, res) => {
         );
       }
     }
-    // Filtrer par statut actif/inactif
     if (req.query.isActive !== undefined) {
       filter.isActive = req.query.isActive === "true";
     }
 
-    // Récupérer les définitions
     const questDefs = await QuestDefinition.find(filter).sort({
       createdAt: -1,
-    }); // Tri par date de création
+    });
     console.log(
       `[Admin Quests] Listage de ${questDefs.length} définition(s) avec filtre:`,
       filter
     );
-    res.status(200).json(questDefs); // Renvoyer le tableau (peut être vide)
+    res.status(200).json(questDefs);
   } catch (error) {
     console.error("Erreur lors du listage des définitions de quêtes:", error);
     res
@@ -98,11 +85,10 @@ router.get("/", async (req, res) => {
   }
 });
 
-// GET /api/admin/quests/:questId - Obtenir les détails d'une définition par son ID textuel unique
+// GET /api/admin/quests/:questId - Obtenir les détails d'une définition
 router.get("/:questId", async (req, res) => {
   try {
     const { questId } = req.params;
-    // Trouver par questId
     const questDef = await QuestDefinition.findOne({ questId: questId });
 
     if (!questDef) {
@@ -112,7 +98,7 @@ router.get("/:questId", async (req, res) => {
       });
     }
     console.log(`[Admin Quests] Détails récupérés pour: ${questId}`);
-    res.status(200).json(questDef); // Renvoyer la définition trouvée
+    res.status(200).json(questDef);
   } catch (error) {
     console.error(
       `Erreur lors de la récupération de la définition ${req.params.questId}:`,
@@ -129,19 +115,14 @@ router.put("/:questId", async (req, res) => {
   try {
     const { questId } = req.params;
     const updateData = { ...req.body };
-    // Sécurités : ne pas permettre de modifier questId ou _id via cette route
     delete updateData.questId;
     delete updateData._id;
-    delete updateData.createdAt; // Empêcher modif createdAt
+    delete updateData.createdAt;
 
-    // Trouver par questId et mettre à jour
     const updatedQuestDef = await QuestDefinition.findOneAndUpdate(
-      { questId: questId }, // Critère de recherche
-      updateData, // Données de mise à jour
-      {
-        new: true, // Retourne le document mis à jour
-        runValidators: true, // Relance les validations du schéma
-      }
+      { questId: questId },
+      updateData,
+      { new: true, runValidators: true }
     );
 
     if (!updatedQuestDef) {
@@ -151,7 +132,7 @@ router.put("/:questId", async (req, res) => {
       });
     }
     console.log(`[Admin Quests] Définition mise à jour: ${questId}`);
-    res.status(200).json(updatedQuestDef); // Renvoyer la définition mise à jour
+    res.status(200).json(updatedQuestDef);
   } catch (error) {
     console.error(
       `Erreur lors de la mise à jour de la définition ${req.params.questId}:`,
@@ -173,10 +154,9 @@ router.delete("/:questId", async (req, res) => {
   try {
     const { questId } = req.params;
     console.warn(
-      `[Admin Quests] Tentative de suppression de la définition ${questId}. ATTENTION: Ceci n'affecte pas les PlayerQuests existantes qui y font référence!`
+      `[Admin Quests] Tentative de suppression de la définition ${questId}. ATTENTION: Ceci n'affecte pas les PlayerQuests existantes!`
     );
 
-    // Trouver par questId et supprimer
     const result = await QuestDefinition.findOneAndDelete({ questId: questId });
 
     if (!result) {
@@ -191,7 +171,6 @@ router.delete("/:questId", async (req, res) => {
     res.status(200).json({
       message: `Définition de quête ${questId} supprimée avec succès.`,
     });
-    // Alternative: res.status(204).send();
   } catch (error) {
     console.error(
       `Erreur lors de la suppression de la définition ${req.params.questId}:`,
@@ -203,118 +182,202 @@ router.delete("/:questId", async (req, res) => {
   }
 });
 
-// --- Route POST /assign-to-all (implémentée précédemment) ---
+// POST /api/admin/quests/assign-to-all - Assigner une quête à tous (inchangé)
 router.post("/assign-to-all", async (req, res) => {
-  // ... (code complet de assign-to-all tel que fourni précédemment) ...
   const { questId } = req.body;
   if (!questId) {
     return res
       .status(400)
-      .json({ message: "Le champ 'questId' est requis..." });
-  }
-  try {
-    const questDef = await QuestDefinition.findOne({
-      questId: questId,
-      isActive: true,
-    });
-    if (!questDef) {
-      return res
-        .status(404)
-        .json({ message: `Définition de quête active introuvable...` });
-    }
-    const allUsers = await User.find({}, "_id").lean();
-    if (!allUsers || allUsers.length === 0) {
-      return res
-        .status(200)
-        .json({
-          message: "Aucun utilisateur trouvé...",
-          assigned_count: 0,
-          skipped_count: 0,
-        });
-    }
-    const userIds = allUsers.map((u) => u._id);
-    let expiresAt = null;
-    const now = new Date();
-    if (questDef.type === "daily") {
-      expiresAt = new Date(now);
-      expiresAt.setUTCHours(23, 59, 59, 999);
-    } else if (questDef.type === "weekly") {
-      expiresAt = new Date(now);
-      expiresAt.setDate(expiresAt.getDate() + (7 - expiresAt.getDay()));
-      expiresAt.setUTCHours(23, 59, 59, 999);
-    } else if (questDef.type === "monthly") {
-      expiresAt = new Date(
-        Date.UTC(
-          now.getUTCFullYear(),
-          now.getUTCMonth() + 1,
-          0,
-          23,
-          59,
-          59,
-          999
-        )
-      );
-    }
-    const bulkOps = [];
-    const assignedAt = new Date();
-    const existingQuests = await PlayerQuest.find({
-      userId: { $in: userIds },
-      questDefinitionId: questDef._id,
-      status: { $ne: "reward_claimed" },
-      expiresAt: expiresAt ? { $gte: assignedAt } : null,
-    })
-      .select("userId")
-      .lean();
-    const usersWithExistingQuest = new Set(
-      existingQuests.map((q) => q.userId.toString())
-    );
-    let assigned_count_result = 0; // Use a separate variable for result
-    for (const userId of userIds) {
-      if (!usersWithExistingQuest.has(userId.toString())) {
-        // assignmentCount++; // Pas besoin de le compter ici
-        bulkOps.push({
-          insertOne: {
-            document: {
-              userId: userId,
-              questDefinitionId: questDef._id,
-              status: "not_started",
-              progress: { current: 0 },
-              completion_streak: questDef.type === "daily" ? 0 : undefined,
-              assignedAt: assignedAt,
-              expiresAt: expiresAt,
-              createdAt: assignedAt,
-              updatedAt: assignedAt,
-            },
-          },
-        });
-      }
-    }
-    if (bulkOps.length > 0) {
-      console.log(
-        `[Assign Quest] Assignation de la quête '${questDef.questId}' à ${bulkOps.length} utilisateur(s)...`
-      );
-      const bulkResult = await PlayerQuest.bulkWrite(bulkOps);
-      assigned_count_result = bulkResult.insertedCount || 0;
-      console.log(
-        `[Assign Quest] ${assigned_count_result} instance(s) de PlayerQuest créée(s).`
-      );
-    } else {
-      console.log(
-        `[Assign Quest] Aucun utilisateur à qui assigner la nouvelle instance de '${questDef.questId}'.`
-      );
-    }
-    res
-      .status(200)
       .json({
-        message: `Assignation de la quête '${questDef.questId}' traitée.`,
-        assigned_count: assigned_count_result,
-        skipped_count: userIds.length - assigned_count_result,
+        message: "Le champ 'questId' est requis dans le corps de la requête.",
       });
+  }
+
+  let session; // Déclarer la session en dehors du try pour le finally
+  try {
+    session = await mongoose.startSession(); // Démarrer une session
+    console.log(
+      `[Assign Quest] Tentative d'assignation globale pour questId: ${questId}`
+    );
+
+    let assigned_count_result = 0;
+    let skipped_count_result = 0;
+
+    await session.withTransaction(async () => {
+      // 1. Trouver la définition de quête active
+      const questDef = await QuestDefinition.findOne({
+        questId: questId,
+        isActive: true,
+      }).session(session);
+      if (!questDef) {
+        // Si la quête n'est pas trouvée, on ne peut rien faire, on sort de la transaction
+        // L'erreur sera gérée après le withTransaction
+        throw new Error(
+          `Définition de quête active introuvable pour questId: ${questId}`
+        );
+      }
+      console.log(
+        `[Assign Quest] Définition trouvée: ${questDef.title} (ID: ${questDef._id})`
+      );
+
+      // 2. Trouver tous les utilisateurs
+      const allUsers = await User.find({}, "_id").lean().session(session); // lean() OK ici car on ne modifie pas les users
+      if (!allUsers || allUsers.length === 0) {
+        console.log("[Assign Quest] Aucun utilisateur trouvé dans la base.");
+        // Pas une erreur, on sort juste de la transaction
+        return; // Quitte la fonction async de withTransaction
+      }
+      const userIds = allUsers.map((u) => u._id);
+      console.log(`[Assign Quest] ${userIds.length} utilisateurs trouvés.`);
+
+      // 3. Calculer la date d'expiration (si applicable)
+      let expiresAt = null;
+      const now = new Date();
+      const assignedAt = now; // Utiliser la même date pour toutes les assignations
+
+      // Utiliser les helpers UTC (s'ils existent, sinon les recréer/importer)
+      const getUtcEndOfDay = (date = new Date()) => {
+        /* ... implémentation ... */ const end = new Date(date);
+        end.setUTCHours(23, 59, 59, 999);
+        return end;
+      };
+      const getUtcEndOfWeek = (date = new Date()) => {
+        /* ... implémentation ... */ const end = new Date(date);
+        const d = end.getUTCDay();
+        const diff = d === 0 ? 0 : 7 - d;
+        end.setUTCDate(end.getUTCDate() + diff);
+        end.setUTCHours(23, 59, 59, 999);
+        return end;
+      };
+      const getUtcEndOfMonth = (date = new Date()) => {
+        /* ... implémentation ... */ return new Date(
+          Date.UTC(
+            date.getUTCFullYear(),
+            date.getUTCMonth() + 1,
+            0,
+            23,
+            59,
+            59,
+            999
+          )
+        );
+      };
+
+      if (questDef.type === "daily") expiresAt = getUtcEndOfDay(now);
+      else if (questDef.type === "weekly") expiresAt = getUtcEndOfWeek(now);
+      else if (questDef.type === "monthly") expiresAt = getUtcEndOfMonth(now);
+
+      console.log(
+        `[Assign Quest] Type: ${questDef.type}, ExpiresAt: ${
+          expiresAt ? expiresAt.toISOString() : "null"
+        }`
+      );
+
+      // 4. Trouver les instances existantes NON RECLAMEES pour cette période
+      const findExistingCriteria = {
+        userId: { $in: userIds },
+        questDefinitionId: questDef._id,
+        status: { $nin: ["reward_claimed"] }, // Ne pas recréer si déjà complété/réclamé
+      };
+      // Ajouter la condition d'expiration seulement si elle existe
+      if (expiresAt) {
+        // Chercher les quêtes qui expirent à la même date ou plus tard (pour éviter doublons si run plusieurs fois)
+        // Ou plus simplement, chercher celles qui expirent exactement à cette date ?
+        // Si on assigne pour AUJOURD'HUI, on cherche celles qui expirent AUJOURD'HUI
+        findExistingCriteria.expiresAt = expiresAt;
+      } else {
+        // Pour les quêtes sans expiration (si ça existe un jour), vérifier s'il y en a une active
+        findExistingCriteria.expiresAt = null;
+      }
+
+      const existingQuests = await PlayerQuest.find(findExistingCriteria)
+        .select("userId")
+        .lean()
+        .session(session);
+      const usersWithExistingQuest = new Set(
+        existingQuests.map((q) => q.userId.toString())
+      );
+      console.log(
+        `[Assign Quest] ${usersWithExistingQuest.size} utilisateur(s) ont déjà une instance active/non réclamée pour cette période.`
+      );
+
+      // 5. Préparer les opérations bulk pour les utilisateurs manquants
+      const bulkOps = [];
+      for (const userId of userIds) {
+        if (!usersWithExistingQuest.has(userId.toString())) {
+          bulkOps.push({
+            insertOne: {
+              document: {
+                userId: userId,
+                questDefinitionId: questDef._id,
+                status: "not_started",
+                progress: { current: 0 },
+                // La streak devrait être gérée par GET /me, initialiser à 0 ici
+                completion_streak: questDef.type === "daily" ? 0 : undefined,
+                assignedAt: assignedAt,
+                expiresAt: expiresAt, // Peut être null
+                // createdAt/updatedAt gérés par Mongoose si timestamps: true
+              },
+            },
+          });
+        }
+      }
+
+      skipped_count_result = usersWithExistingQuest.size; // Le nombre skippé est ceux qui l'avaient déjà
+
+      // 6. Exécuter le bulkWrite si nécessaire
+      if (bulkOps.length > 0) {
+        console.log(
+          `[Assign Quest] [TX] Assignation de '${questDef.questId}' à ${bulkOps.length} utilisateur(s)...`
+        );
+        const bulkResult = await PlayerQuest.bulkWrite(bulkOps, {
+          session: session,
+        });
+        assigned_count_result = bulkResult.insertedCount || 0;
+        console.log(
+          `[Assign Quest] [TX] ${assigned_count_result} instance(s) de PlayerQuest créée(s).`
+        );
+        if (assigned_count_result !== bulkOps.length) {
+          console.warn(
+            `[Assign Quest] [TX] Problème lors du bulkWrite: ${bulkOps.length} opérations demandées, ${assigned_count_result} insérées.`
+          );
+          // La transaction devrait échouer si une insertion rate, mais ajoutons une vérification
+          if (bulkResult.hasWriteErrors()) {
+            throw new Error(
+              `Erreur lors du bulkWrite: ${JSON.stringify(
+                bulkResult.getWriteErrors()
+              )}`
+            );
+          }
+        }
+      } else {
+        console.log(
+          `[Assign Quest] Aucun nouvel utilisateur à qui assigner '${questDef.questId}' pour cette période.`
+        );
+        assigned_count_result = 0; // Assurer que c'est bien 0
+      }
+
+      // Si on arrive ici, la transaction est réussie
+    }); // Fin de session.withTransaction()
+
+    // Si la transaction a réussi (pas d'erreur levée)
+    res.status(200).json({
+      message: `Assignation de la quête '${questId}' traitée.`,
+      assigned_count: assigned_count_result,
+      skipped_count: skipped_count_result, // utilisateurs.length - assigned_count_result serait faux si certains étaient skippés
+    });
   } catch (error) {
-    console.error(`Erreur assignation globale ${questId}:`, error);
-    res
-      .status(500)
-      .json({ message: "Erreur serveur interne lors de l'assignation." });
+    console.error(`Erreur lors de l'assignation globale de ${questId}:`, error);
+    // Si l'erreur vient de la transaction (ex: questDef non trouvé), elle sera attrapée ici
+    res.status(error.message.includes("introuvable") ? 404 : 500).json({
+      message: error.message || "Erreur serveur interne lors de l'assignation.",
+    });
+  } finally {
+    // Terminer la session MongoDB si elle a été démarrée
+    if (session) {
+      await session.endSession();
+      console.log("[Assign Quest] Session MongoDB terminée.");
+    }
   }
 });
 
